@@ -39,12 +39,13 @@
     for (const id of ["sd-settings-save", "sd-settings-restart"]) $(id).disabled = true;
     let restarting = false;
     try {
-      const csrfToken = (await fetchJson("/api/status")).csrfToken || "";
+      const headers = await WebAuth.settingsHeaders();
+      if (headers === null) return;
       const response = await fetch("/api/sd/bus", {
         method: "POST",
         cache: "no-store",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+        headers: { "Content-Type": "application/json", ...headers },
         body: JSON.stringify({ mode: $("sd-settings-mode").value, restart }),
       });
       const text = await response.text();

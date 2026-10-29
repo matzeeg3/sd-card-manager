@@ -58,6 +58,8 @@ This package alone is not a flashable application.
 The **SD card bus** card in the web interface settings switches between SPI
 and 4-bit SDMMC at runtime. The selection is stored in NVS (namespace
 `sd_card`) and applies after a restart; both pin sets are always compiled in.
+Saving uses `web_interface_authorize_settings_request()`, so it asks for the
+admin password when OTA Suite requires it for settings.
 Optionally register `sd_card_manager_set_busy_callback()` so that "Save and
 restart" never restarts the device while the application is busy.
 

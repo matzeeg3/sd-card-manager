@@ -938,7 +938,7 @@ static void restart_task(void *arg)
 
 static esp_err_t bus_handler(httpd_req_t *req)
 {
-    if (!web_interface_authorize_request(req, true)) {
+    if (!web_interface_authorize_settings_request(req)) {
         return ESP_OK;
     }
     cJSON *json = NULL;
