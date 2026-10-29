@@ -3,8 +3,12 @@
 
 menu "SD Card Manager"
     choice SD_CARD_MANAGER_BUS_MODE
-        prompt "SD card bus mode"
+        prompt "Default SD card bus mode"
         default SD_CARD_MANAGER_BUS_SDMMC_4BIT
+        help
+            Bus mode used until another mode is selected in the web interface
+            settings. The selection is stored in NVS and applies after a restart.
+            Both pin sets below are always compiled in.
 
         config SD_CARD_MANAGER_BUS_SDMMC_4BIT
             bool "4-bit SDMMC"
@@ -15,13 +19,11 @@ menu "SD Card Manager"
 
     config SD_CARD_MANAGER_SDMMC_FREQ_KHZ
         int "SDMMC clock frequency (kHz)"
-        depends on SD_CARD_MANAGER_BUS_SDMMC_4BIT
         range 400 20000
         default 10000
 
     config SD_CARD_MANAGER_SPI_FREQ_KHZ
         int "SPI clock frequency (kHz)"
-        depends on SD_CARD_MANAGER_BUS_SPI
         range 400 20000
         default 10000
 
@@ -36,61 +38,51 @@ menu "SD Card Manager"
 
     config SD_CARD_MANAGER_GPIO_CLK
         int "SDMMC CLK GPIO"
-        depends on SD_CARD_MANAGER_BUS_SDMMC_4BIT
         range 0 48
         default 14
 
     config SD_CARD_MANAGER_GPIO_CMD
         int "SDMMC CMD GPIO"
-        depends on SD_CARD_MANAGER_BUS_SDMMC_4BIT
         range 0 48
         default 15
 
     config SD_CARD_MANAGER_GPIO_D0
         int "SDMMC D0 GPIO"
-        depends on SD_CARD_MANAGER_BUS_SDMMC_4BIT
         range 0 48
         default 2
 
     config SD_CARD_MANAGER_GPIO_D1
         int "SDMMC D1 GPIO"
-        depends on SD_CARD_MANAGER_BUS_SDMMC_4BIT
         range 0 48
         default 4
 
     config SD_CARD_MANAGER_GPIO_D2
         int "SDMMC D2 GPIO"
-        depends on SD_CARD_MANAGER_BUS_SDMMC_4BIT
         range 0 48
         default 5
 
     config SD_CARD_MANAGER_GPIO_D3
         int "SDMMC D3 GPIO"
-        depends on SD_CARD_MANAGER_BUS_SDMMC_4BIT
         range 0 48
         default 6
 
     config SD_CARD_MANAGER_GPIO_SPI_MISO
         int "SPI MISO GPIO"
-        depends on SD_CARD_MANAGER_BUS_SPI
         range 0 48
         default 2
 
     config SD_CARD_MANAGER_GPIO_SPI_MOSI
         int "SPI MOSI GPIO"
-        depends on SD_CARD_MANAGER_BUS_SPI
         range 0 48
         default 15
 
     config SD_CARD_MANAGER_GPIO_SPI_CS
         int "SPI CS GPIO"
-        depends on SD_CARD_MANAGER_BUS_SPI
         range 0 48
         default 6
 
     config SD_CARD_MANAGER_GPIO_SPI_CLK
         int "SPI CLK GPIO"
-        depends on SD_CARD_MANAGER_BUS_SPI
         range 0 48
         default 14
 endmenu

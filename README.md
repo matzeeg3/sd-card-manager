@@ -51,9 +51,15 @@ This package alone is not a flashable application.
 1. Add both packages' `components` directories to `EXTRA_COMPONENT_DIRS`.
 2. Require `sd_card_manager` and `device_app` from the application component.
 3. Call `sd_card_manager_init()` before `device_app_start()`.
-4. Configure bus mode, pins, clock, mount point, and card detection under
-   **menuconfig -> SD Card Manager**.
+4. Configure the default bus mode, pins, clock, mount point, and card
+   detection under **menuconfig -> SD Card Manager**.
 5. Build the consuming application with **ESP-IDF: Build your project**.
+
+The **SD card bus** card in the web interface settings switches between SPI
+and 4-bit SDMMC at runtime. The selection is stored in NVS (namespace
+`sd_card`) and applies after a restart; both pin sets are always compiled in.
+Optionally register `sd_card_manager_set_busy_callback()` so that "Save and
+restart" never restarts the device while the application is busy.
 
 Initialization registers the SD tab and starts card polling. HTTP operations
 use OTA Suite's login and CSRF protection. SD errors are reported; the

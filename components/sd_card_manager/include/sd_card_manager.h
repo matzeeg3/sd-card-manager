@@ -24,6 +24,9 @@ typedef struct {
 /* Registers the authenticated UI extension and starts/retries non-destructive mounts. */
 esp_err_t sd_card_manager_init(void);
 void sd_card_manager_get_status(sd_card_manager_status_t *status);
+/* Optional. When the callback returns true, a bus mode change from the web interface is saved
+ * but the device is not restarted. Call before the web server starts; the callback must not block. */
+void sd_card_manager_set_busy_callback(bool (*callback)(void));
 /* Acquires the shared card lock only while the SD card is mounted. */
 esp_err_t sd_card_manager_storage_acquire(TickType_t timeout_ticks);
 void sd_card_manager_storage_release(void);

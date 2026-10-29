@@ -18,6 +18,7 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "esp_vfs_fat.h"
 #include "driver/gpio.h"
 #include "driver/sdmmc_host.h"
@@ -26,6 +27,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "sdmmc_cmd.h"
 #include "sdkconfig.h"
 #include "web_interface.h"
@@ -34,6 +36,10 @@ extern const unsigned char sd_html_start[] asm("_binary_sd_card_html_start");
 extern const unsigned char sd_html_end[] asm("_binary_sd_card_html_end");
 extern const unsigned char sd_js_start[] asm("_binary_sd_card_js_start");
 extern const unsigned char sd_js_end[] asm("_binary_sd_card_js_end");
+extern const unsigned char sd_settings_html_start[] asm("_binary_sd_settings_html_start");
+extern const unsigned char sd_settings_html_end[] asm("_binary_sd_settings_html_end");
+extern const unsigned char sd_settings_js_start[] asm("_binary_sd_settings_js_start");
+extern const unsigned char sd_settings_js_end[] asm("_binary_sd_settings_js_end");
 
 #define SD_MOUNT CONFIG_SD_CARD_MANAGER_MOUNT_POINT
 #define MAX_PATH 240
@@ -42,13 +48,34 @@ extern const unsigned char sd_js_end[] asm("_binary_sd_card_js_end");
 #define IO_CHUNK 4096
 #define CARD_POLL_INTERVAL_MS 250
 #define CARD_DETECT_STABLE_SAMPLES 4
+#define NVS_NAMESPACE "sd_card"
+#define NVS_BUS_KEY "bus"
+/* NVS is initialized later by the application; wait this many polls before using the default. */
+#define BUS_LOAD_MAX_POLLS 20
+#define RESTART_DELAY_MS 1000
+
+typedef enum {
+    SD_BUS_SDMMC = 0,
+    SD_BUS_SPI = 1,
+} sd_bus_mode_t;
+
+#if CONFIG_SD_CARD_MANAGER_BUS_SPI
+#define DEFAULT_BUS_MODE SD_BUS_SPI
+#else
+#define DEFAULT_BUS_MODE SD_BUS_SDMMC
+#endif
 
 static const char *TAG = "sd_card";
 static SemaphoreHandle_t storage_lock;
 static sdmmc_card_t *card;
-#if CONFIG_SD_CARD_MANAGER_BUS_SPI
 static bool spi_bus_initialized;
-#endif
+/* active_bus is fixed after start-up; configured_bus may change and applies after a restart. */
+static sd_bus_mode_t active_bus = DEFAULT_BUS_MODE;
+static sd_bus_mode_t configured_bus = DEFAULT_BUS_MODE;
+static bool bus_loaded;
+static unsigned bus_load_polls;
+static bool restart_pending;
+static bool (*busy_callback)(void);
 static sd_card_manager_status_t status;
 static bool card_present;
 static bool card_detect_candidate;
@@ -115,7 +142,6 @@ static bool unmount_card_locked(void)
         return false;
     }
     card = NULL;
-#if CONFIG_SD_CARD_MANAGER_BUS_SPI
     if (spi_bus_initialized) {
         err = spi_bus_free(SDSPI_DEFAULT_HOST);
         if (err == ESP_OK) {
@@ -124,7 +150,37 @@ static bool unmount_card_locked(void)
             ESP_LOGW(TAG, "Cannot release SD SPI bus: %s", esp_err_to_name(err));
         }
     }
-#endif
+    return true;
+}
+
+static const char *bus_mode_name(sd_bus_mode_t mode)
+{
+    return mode == SD_BUS_SPI ? "spi" : "sdmmc";
+}
+
+/* Loads the stored bus mode once NVS is available; returns false while still waiting. */
+static bool load_bus_mode_locked(void)
+{
+    if (bus_loaded) {
+        return true;
+    }
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_ERR_NVS_NOT_INITIALIZED && ++bus_load_polls < BUS_LOAD_MAX_POLLS) {
+        return false;
+    }
+    if (err == ESP_OK) {
+        uint8_t value = 0;
+        if (nvs_get_u8(handle, NVS_BUS_KEY, &value) == ESP_OK && value <= SD_BUS_SPI) {
+            configured_bus = (sd_bus_mode_t)value;
+        }
+        nvs_close(handle);
+    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Cannot read stored SD bus mode, using default: %s", esp_err_to_name(err));
+    }
+    active_bus = configured_bus;
+    bus_loaded = true;
+    ESP_LOGI(TAG, "SD bus mode: %s", active_bus == SD_BUS_SPI ? "SPI" : "4-bit SDMMC");
     return true;
 }
 
@@ -289,6 +345,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     sd_card_manager_status_t current = status;
     bool detected = card_present;
     int detect_level = gpio_get_level(CONFIG_SD_CARD_MANAGER_GPIO_CARD_DETECT);
+    sd_bus_mode_t bus = active_bus;
+    sd_bus_mode_t configured = configured_bus;
+    bool pending = restart_pending;
     xSemaphoreGive(storage_lock);
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
@@ -302,7 +361,11 @@ static esp_err_t status_handler(httpd_req_t *req)
               cJSON_AddBoolToObject(root, "freeSpaceKnown", current.free_space_known) &&
               cJSON_AddNumberToObject(root, "totalBytes", (double)current.total_bytes) &&
               cJSON_AddNumberToObject(root, "freeBytes", (double)current.free_bytes) &&
-              cJSON_AddStringToObject(root, "message", current.message);
+              cJSON_AddStringToObject(root, "message", current.message) &&
+              cJSON_AddStringToObject(root, "busMode", bus_mode_name(bus)) &&
+              cJSON_AddStringToObject(root, "configuredBusMode", bus_mode_name(configured)) &&
+              cJSON_AddBoolToObject(root, "restartRequired", bus != configured) &&
+              cJSON_AddBoolToObject(root, "restartPending", pending);
     char *body = ok ? cJSON_PrintUnformatted(root) : NULL;
     cJSON_Delete(root);
     if (body == NULL) {
@@ -737,9 +800,8 @@ static esp_err_t upload_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "File uploaded.");
 }
 
-static esp_err_t mount_card(void)
+static esp_err_t mount_card_spi(const esp_vfs_fat_mount_config_t *config, sdmmc_card_t **mounted_card)
 {
-#if CONFIG_SD_CARD_MANAGER_BUS_SPI
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.max_freq_khz = CONFIG_SD_CARD_MANAGER_SPI_FREQ_KHZ;
     spi_bus_config_t bus_config = {
@@ -761,7 +823,26 @@ static esp_err_t mount_card(void)
     sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot.gpio_cs = CONFIG_SD_CARD_MANAGER_GPIO_SPI_CS;
     slot.host_id = host.slot;
-#else
+    esp_err_t err = esp_vfs_fat_sdspi_mount(SD_MOUNT, &host, &slot, config, mounted_card);
+    if (err != ESP_OK) {
+        esp_err_t free_err = spi_bus_free(host.slot);
+        if (free_err == ESP_OK) {
+            spi_bus_initialized = false;
+        } else {
+            ESP_LOGW(TAG, "Cannot release SD SPI bus after mount failure: %s",
+                     esp_err_to_name(free_err));
+        }
+        return err;
+    }
+    ESP_LOGI(TAG, "Mounted SD card at %s over SPI (MISO=%d, MOSI=%d, CS=%d, CLK=%d, %d kHz)",
+             SD_MOUNT, CONFIG_SD_CARD_MANAGER_GPIO_SPI_MISO,
+             CONFIG_SD_CARD_MANAGER_GPIO_SPI_MOSI, CONFIG_SD_CARD_MANAGER_GPIO_SPI_CS,
+             CONFIG_SD_CARD_MANAGER_GPIO_SPI_CLK, host.max_freq_khz);
+    return ESP_OK;
+}
+
+static esp_err_t mount_card_sdmmc(const esp_vfs_fat_mount_config_t *config, sdmmc_card_t **mounted_card)
+{
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.max_freq_khz = CONFIG_SD_CARD_MANAGER_SDMMC_FREQ_KHZ;
     sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
@@ -773,7 +854,16 @@ static esp_err_t mount_card(void)
     slot.d2 = CONFIG_SD_CARD_MANAGER_GPIO_D2;
     slot.d3 = CONFIG_SD_CARD_MANAGER_GPIO_D3;
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-#endif
+    esp_err_t err = esp_vfs_fat_sdmmc_mount(SD_MOUNT, &host, &slot, config, mounted_card);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Mounted SD card at %s with 4-bit SDMMC at %d kHz",
+                 SD_MOUNT, host.max_freq_khz);
+    }
+    return err;
+}
+
+static esp_err_t mount_card(void)
+{
     const esp_vfs_fat_mount_config_t config = {
         .format_if_mount_failed = false,
         .max_files = 5,
@@ -781,21 +871,9 @@ static esp_err_t mount_card(void)
         .disk_status_check_enable = true,
     };
     sdmmc_card_t *mounted_card = NULL;
-#if CONFIG_SD_CARD_MANAGER_BUS_SPI
-    esp_err_t err = esp_vfs_fat_sdspi_mount(SD_MOUNT, &host, &slot, &config, &mounted_card);
-#else
-    esp_err_t err = esp_vfs_fat_sdmmc_mount(SD_MOUNT, &host, &slot, &config, &mounted_card);
-#endif
+    esp_err_t err = active_bus == SD_BUS_SPI ? mount_card_spi(&config, &mounted_card)
+                                             : mount_card_sdmmc(&config, &mounted_card);
     if (err != ESP_OK) {
-#if CONFIG_SD_CARD_MANAGER_BUS_SPI
-        esp_err_t free_err = spi_bus_free(host.slot);
-        if (free_err == ESP_OK) {
-            spi_bus_initialized = false;
-        } else {
-            ESP_LOGW(TAG, "Cannot release SD SPI bus after mount failure: %s",
-                     esp_err_to_name(free_err));
-        }
-#endif
         char message[128];
         snprintf(message, sizeof(message), "SD card unavailable: %s. Nothing was formatted.",
                  esp_err_to_name(err));
@@ -814,15 +892,6 @@ static esp_err_t mount_card(void)
     refresh_free_space_locked();
     strlcpy(status.message, "SD card ready.", sizeof(status.message));
     sdmmc_card_print_info(stdout, card);
-#if CONFIG_SD_CARD_MANAGER_BUS_SPI
-    ESP_LOGI(TAG, "Mounted SD card at %s over SPI (MISO=%d, MOSI=%d, CS=%d, CLK=%d, %d kHz)",
-             SD_MOUNT, CONFIG_SD_CARD_MANAGER_GPIO_SPI_MISO,
-             CONFIG_SD_CARD_MANAGER_GPIO_SPI_MOSI, CONFIG_SD_CARD_MANAGER_GPIO_SPI_CS,
-             CONFIG_SD_CARD_MANAGER_GPIO_SPI_CLK, host.max_freq_khz);
-#else
-    ESP_LOGI(TAG, "Mounted SD card at %s with 4-bit SDMMC at %d kHz",
-             SD_MOUNT, host.max_freq_khz);
-#endif
     return ESP_OK;
 }
 
@@ -843,7 +912,9 @@ static void retry_mount_task(void *arg)
                 mark_card_unavailable("SD card removed; retrying release.");
             }
         } else if (card == NULL) {
-            mount_card();
+            if (load_bus_mode_locked()) {
+                mount_card();
+            }
         } else if (!status.mounted) {
             if (unmount_card_locked()) {
                 mount_card();
@@ -851,6 +922,88 @@ static void retry_mount_task(void *arg)
         }
         xSemaphoreGive(storage_lock);
     }
+}
+
+static void restart_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(RESTART_DELAY_MS));
+    /* Holding the storage lock guarantees that no guarded SD write is in progress. */
+    if (xSemaphoreTake(storage_lock, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGW(TAG, "SD storage still busy; restarting anyway");
+    }
+    ESP_LOGI(TAG, "Restarting to apply the SD bus mode");
+    esp_restart();
+}
+
+static esp_err_t bus_handler(httpd_req_t *req)
+{
+    if (!web_interface_authorize_request(req, true)) {
+        return ESP_OK;
+    }
+    cJSON *json = NULL;
+    esp_err_t err = receive_json(req, &json);
+    if (err != ESP_OK) {
+        cJSON_Delete(json);
+        return send_error(req, "400 Bad Request", "JSON request missing, too large or invalid.");
+    }
+    const char *mode = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "mode"));
+    const bool restart = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json, "restart"));
+    sd_bus_mode_t selected;
+    if (mode != NULL && strcmp(mode, "spi") == 0) {
+        selected = SD_BUS_SPI;
+    } else if (mode != NULL && strcmp(mode, "sdmmc") == 0) {
+        selected = SD_BUS_SDMMC;
+    } else {
+        cJSON_Delete(json);
+        return send_error(req, "400 Bad Request", "Unknown SD bus mode.");
+    }
+    cJSON_Delete(json);
+
+    nvs_handle_t handle;
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, NVS_BUS_KEY, (uint8_t)selected);
+        if (err == ESP_OK) {
+            err = nvs_commit(handle);
+        }
+        nvs_close(handle);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Cannot store SD bus mode: %s", esp_err_to_name(err));
+        return send_error(req, "500 Internal Server Error", "Could not save the SD bus mode.");
+    }
+    xSemaphoreTake(storage_lock, portMAX_DELAY);
+    configured_bus = selected;
+    const bool changed = configured_bus != active_bus;
+    xSemaphoreGive(storage_lock);
+    ESP_LOGI(TAG, "SD bus mode set to %s", selected == SD_BUS_SPI ? "SPI" : "4-bit SDMMC");
+
+    if (!changed) {
+        return httpd_resp_sendstr(req, "SD bus mode saved; it is already active.");
+    }
+    if (!restart) {
+        return httpd_resp_sendstr(req, "SD bus mode saved. It applies after the next restart.");
+    }
+    if (busy_callback != NULL && busy_callback()) {
+        return send_error(req, "409 Conflict",
+                          "SD bus mode saved, but an operation or recording is active. "
+                          "Restart the device later to apply it.");
+    }
+    xSemaphoreTake(storage_lock, portMAX_DELAY);
+    const bool already_pending = restart_pending;
+    restart_pending = true;
+    xSemaphoreGive(storage_lock);
+    if (!already_pending &&
+        xTaskCreate(restart_task, "sd_bus_restart", 3072, NULL, 5, NULL) != pdPASS) {
+        xSemaphoreTake(storage_lock, portMAX_DELAY);
+        restart_pending = false;
+        xSemaphoreGive(storage_lock);
+        return send_error(req, "500 Internal Server Error",
+                          "SD bus mode saved, but the restart could not be scheduled.");
+    }
+    httpd_resp_set_status(req, "202 Accepted");
+    return httpd_resp_sendstr(req, "SD bus mode saved. The device restarts now.");
 }
 
 static const httpd_uri_t routes[] = {
@@ -864,7 +1017,13 @@ static const httpd_uri_t routes[] = {
     {.uri = "/api/sd/upload", .method = HTTP_POST, .handler = upload_handler},
 };
 
+static const httpd_uri_t settings_routes[] = {
+    {.uri = "/api/sd/bus", .method = HTTP_POST, .handler = bus_handler},
+};
+
 static web_interface_extension_t extension = {
+};
+static web_interface_extension_t settings_extension = {
 };
 
 esp_err_t sd_card_manager_init(void)
@@ -877,6 +1036,15 @@ esp_err_t sd_card_manager_init(void)
     extension.script_size = (size_t)(sd_js_end - sd_js_start);
     extension.routes = routes;
     extension.route_count = sizeof(routes) / sizeof(routes[0]);
+    settings_extension.id = "sd-settings";
+    settings_extension.label = "SD card bus";
+    settings_extension.content = sd_settings_html_start;
+    settings_extension.content_size = (size_t)(sd_settings_html_end - sd_settings_html_start);
+    settings_extension.script = sd_settings_js_start;
+    settings_extension.script_size = (size_t)(sd_settings_js_end - sd_settings_js_start);
+    settings_extension.routes = settings_routes;
+    settings_extension.route_count = sizeof(settings_routes) / sizeof(settings_routes[0]);
+    settings_extension.placement = "settings";
     storage_lock = xSemaphoreCreateMutex();
     if (storage_lock == NULL) {
         ESP_LOGE(TAG, "Cannot create SD storage mutex");
@@ -898,6 +1066,9 @@ esp_err_t sd_card_manager_init(void)
     }
     strlcpy(status.message, "Waiting for SD card detection.", sizeof(status.message));
     err = web_interface_register_extension(&extension);
+    if (err == ESP_OK) {
+        err = web_interface_register_extension(&settings_extension);
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Cannot register SD UI extension: %s", esp_err_to_name(err));
         vSemaphoreDelete(storage_lock);
@@ -908,7 +1079,10 @@ esp_err_t sd_card_manager_init(void)
     card_present = card_detected();
     card_detect_candidate = card_present;
     if (card_present) {
-        mount_card();
+        /* Without NVS yet, the retry task mounts once the stored bus mode is known. */
+        if (load_bus_mode_locked()) {
+            mount_card();
+        }
     } else {
         mark_card_unavailable("No SD card detected.");
     }
@@ -918,6 +1092,11 @@ esp_err_t sd_card_manager_init(void)
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+void sd_card_manager_set_busy_callback(bool (*callback)(void))
+{
+    busy_callback = callback;
 }
 
 void sd_card_manager_get_status(sd_card_manager_status_t *out)
