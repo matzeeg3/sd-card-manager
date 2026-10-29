@@ -5,7 +5,7 @@
 
 (() => {
   const $ = (id) => document.getElementById(id);
-  const names = { spi: "SPI", sdmmc: "4-bit SDMMC" };
+  const names = { spi: I18n.t("text.60c5158ae188"), sdmmc: I18n.t("text.58640216ee4e") };
 
   function showMessage(text, kind = "info") {
     const box = $("sd-settings-message");
@@ -25,12 +25,12 @@
     if (!$("sd-settings-form")) return;
     try {
       const status = await fetchJson("/api/sd/status");
-      let active = names[status.busMode] || status.busMode;
-      if (status.restartRequired) active += ` (after restart: ${names[status.configuredBusMode]})`;
-      $("sd-settings-active").textContent = active;
+      const active = names[status.busMode] || status.busMode;
+      $("sd-settings-active").textContent = status.restartRequired ?
+        I18n.f("text.d9641c4d3d03", {p0: active, p1: names[status.configuredBusMode]}) : active;
       $("sd-settings-mode").value = status.configuredBusMode;
     } catch (error) {
-      showMessage(error.message, "danger");
+      showMessage(I18n.message(error.message), "danger");
     }
   }
 
@@ -50,9 +50,10 @@
       const text = await response.text();
       if (!response.ok) throw new Error(text || `HTTP ${response.status}`);
       restarting = response.status === 202;
-      showMessage(restarting ? `${text} Reload this page in about 20 seconds.` : text, "success");
+      showMessage(restarting ? I18n.f("text.a43ead60b01b", {p0: I18n.message(text)}) :
+        I18n.message(text), "success");
     } catch (error) {
-      showMessage(error.message, "danger");
+      showMessage(I18n.message(error.message), "danger");
     } finally {
       if (!restarting) {
         await refresh();
@@ -66,7 +67,7 @@
     void save(false);
   });
   $("sd-settings-restart").addEventListener("click", () => {
-    if (confirm("Save the SD bus mode and restart the device now?")) void save(true);
+    if (confirm(I18n.t("text.1dcfe6182404"))) void save(true);
   });
   void refresh();
 })();

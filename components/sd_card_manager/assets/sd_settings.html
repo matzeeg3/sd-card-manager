@@ -3,28 +3,28 @@
 
 <div class="card">
   <div class="card-body">
-    <h2 class="h4">SD card bus</h2>
-    <p>
+    <h2 class="h4" data-i18n="text.caa2ca532863">SD card bus</h2>
+    <p data-i18n="text.4d0be8f86333">
       Selects how the SD card is connected. SPI needs CLK, MOSI (CMD), MISO (D0) and CS (D3);
       4-bit SDMMC additionally needs D1 and D2 and pull-ups on CMD and D0–D3. The change is
       stored on the device and applies after a restart.
     </p>
     <div id="sd-settings-message" class="alert d-none" role="status"></div>
-    <p class="mb-3">Active mode: <strong id="sd-settings-active">-</strong></p>
+    <p class="mb-3"><span data-i18n="text.ccb4cd18d246">Active mode:</span> <strong id="sd-settings-active">-</strong></p>
     <form id="sd-settings-form" class="row g-3">
       <div class="col-sm-6">
-        <label for="sd-settings-mode" class="form-label">Bus mode</label>
+        <label for="sd-settings-mode" class="form-label" data-i18n="text.1ad3f2fa608b">Bus mode</label>
         <select id="sd-settings-mode" class="form-select">
-          <option value="spi">SPI</option>
-          <option value="sdmmc">4-bit SDMMC</option>
+          <option value="spi" data-i18n="text.60c5158ae188">SPI</option>
+          <option value="sdmmc" data-i18n="text.58640216ee4e">4-bit SDMMC</option>
         </select>
       </div>
       <div class="col-12 d-flex flex-wrap gap-2">
-        <button id="sd-settings-save" class="btn btn-outline-primary" type="submit">Save setting</button>
-        <button id="sd-settings-restart" class="btn btn-primary" type="button">Save and restart</button>
+        <button id="sd-settings-save" class="btn btn-outline-primary" type="submit" data-i18n="text.81ce04e71582">Save setting</button>
+        <button id="sd-settings-restart" class="btn btn-primary" type="button" data-i18n="text.4fe66b4225d6">Save and restart</button>
       </div>
     </form>
-    <p class="small text-body-secondary mt-3 mb-0">
+    <p class="small text-body-secondary mt-3 mb-0" data-i18n="text.66eaef7329f8">
       The device does not restart while an operation or recording is active. If the card does not
       mount in the selected mode, switch back here; the web interface works without an SD card.
     </p>
